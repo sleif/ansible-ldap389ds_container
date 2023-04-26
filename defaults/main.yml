@@ -1,0 +1,21 @@
+---
+
+# sleif/roles/osixia_openldap_backup_container/defaults/main.yml
+container_storage_dir_base: '/srv'
+
+ldap_host: '127.0.0.1'
+ldap_protocol: 'ldap'
+ldap_base_dn: '' # "dc=example,dc=com"
+ldap_admin_password: ''
+
+ldap_auth:
+  server_uri: "{{ ldap_protocol }}://{{ ldap_host }}"
+  bind_dn: "cn=admin,{{ ldap_base_dn }}"
+  bind_pw: "{{ ldap_admin_password }}"
+
+ldap_auth_config:
+  server_uri: "{{ ldap_protocol }}://{{ ldap_host }}"
+  bind_dn: "cn=admin,cn=config"
+  bind_pw: "{{ LDAP_CONFIG_PASSWORD }}"
+
+openldap_container_version: "1.5.0"

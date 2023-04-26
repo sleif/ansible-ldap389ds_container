@@ -1,0 +1,4 @@
+---
+# sleif/roles/osixia_openldap_backup_container/meta/main.yml
+dependencies:
+  - { role: sleif.docker, tags: docker }

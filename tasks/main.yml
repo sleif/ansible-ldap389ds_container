@@ -1,0 +1,459 @@
+---
+
+# TODO: ldap hostname in /etc/hosts file
+
+# - debug:
+#     var: ansible_default_ipv6
+#     # var: ansible_default_ipv4.network + '/' + ansible_default_ipv4.prefix|string
+# - pause:
+
+- name: Gather info about possibly existing pod for nextcloud
+  containers.podman.podman_pod_info:
+    name: "{{ pod_name }}"
+  register: _pod_info
+  when:
+    - pod_name is defined
+    - pod_name | length > 0
+
+- name: Create the pod if not already exists
+  containers.podman.podman_pod:
+    name: "{{ pod_name }}"
+    publish: "{{ pod_published_ports | default(omit) }}"
+  register: _pod_info
+  when:
+    - pod_name is defined
+    - pod_name | length > 0
+    - _pod_info.pods | length == 0
+
+- name: Gather info about specific network
+  containers.podman.podman_network_info:
+    name: "podman"
+  register: _podman_network_info
+  when:
+    - pod_name is defined
+    - pod_name | length > 0
+
+- name: create new firewalld zone for internal networking
+  ansible.posix.firewalld:
+    zone: internal_ldap
+    state: present
+    permanent: true
+  register: firewalld_new_zone
+  tags: firewalld
+
+- name: reload firewalld after new zone creation
+  ansible.builtin.service:
+    name: firewalld
+    state: reloaded
+  when: firewalld_new_zone.changed | bool
+  tags: firewalld
+
+# Todo define network for docker
+- name: add source network for internal network
+  ansible.posix.firewalld:
+    source: "{{ item }}"
+    zone: internal_ldap
+    state: enabled
+    immediate: true
+    permanent: true
+  loop:
+    - "{{ ansible_default_ipv4.network + '/' + ansible_default_ipv4.prefix|string }}"
+    - "{{ _podman_network_info.networks[0].subnets[0].subnet }}"
+  tags: firewalld
+
+# - name: add source network for internal network - or just the mail server
+#   ansible.posix.firewalld:
+#     source: 2a01:4f8:210:31ae:190::25/80
+#     zone: internal_ldap
+#     state: enabled
+#     immediate: true
+#     permanent: true
+#   tags: firewalld
+
+- name: disable port ldap 389
+  ansible.posix.firewalld:
+    zone: internal_ldap
+    service: ldap
+    permanent: true
+    immediate: true
+    state: disabled
+  tags: firewalld
+
+- name: open port ldaps 636
+  ansible.posix.firewalld:
+    zone: internal_ldap
+    service: ldaps
+    permanent: true
+    immediate: true
+    state: enabled
+  tags: firewalld
+
+- name: "Create directories below {{ container_storage_dir_base }}/ldap"
+  ansible.builtin.file:
+    state: directory
+    path: '{{ container_storage_dir_base }}/ldap/{{ item }}'
+    mode: 0750
+  with_items:
+    - bootstrap-custom
+  tags: skipttag
+
+- name: fill files for bootstrap ldap
+  ansible.builtin.copy:
+    src: bootstrap-custom/
+    dest: '{{ container_storage_dir_base }}/ldap/bootstrap-custom'
+    mode: 0640
+  tags: skipttag
+
+- name: create persistant openldap data directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0750'
+  loop:
+    - '{{ container_storage_dir_base }}/ldap/bootstrap-custom:/container/service/slapd/assets/config/bootstrap/ldif/custom:Z'
+    - '{{ container_storage_dir_base }}/ldap/certs:/container/service/slapd/assets/certs:Z'
+    - '{{ container_storage_dir_base }}/ldap/data:/var/lib/ldap:Z'
+    - '{{ container_storage_dir_base }}/ldap/config:/etc/ldap/slapd.d:Z'
+    - '{{ container_storage_dir_base }}/ldap/backup:/data/backup:Z'
+
+- name: osixia-openldap-backup-Container starten
+  containers.podman.podman_container:
+    name: openldap-backup
+    hostname: openldap-backup
+    image: "docker.io/osixia/openldap-backup:{{ openldap_container_version }}"
+    pod: "{{ pod_name | default(omit) }}"
+    # entrypoint: "/container/tool/run --loglevel debug"
+    # networks:
+    #   - name: "{{ DOCKER_NETWORK_NAME }}"
+    #     aliases:
+    #       - ldap-container
+    # networks_cli_compatible: true
+    state: started
+    restart_policy: always
+    recreate: true
+    # restart: true
+    pull: true
+    # published_ports:
+    #   - '389:389'
+    #   - '636:636'
+    volumes:
+      - '{{ container_storage_dir_base }}/ldap/bootstrap-custom:/container/service/slapd/assets/config/bootstrap/ldif/custom:Z'
+      - '{{ container_storage_dir_base }}/ldap/certs:/container/service/slapd/assets/certs:Z'
+      - '{{ container_storage_dir_base }}/ldap/data:/var/lib/ldap:Z'
+      - '{{ container_storage_dir_base }}/ldap/config:/etc/ldap/slapd.d:Z'
+      - '{{ container_storage_dir_base }}/ldap/backup:/data/backup:Z'
+    # security_opts: label:type:docker_t
+    env:
+      # https://www.openldap.org/doc/admin24/runningslapd.html
+      # https://www.openldap.org/doc/admin24/slapdconf2.html
+      # consider olcLogLevel -1 setting in ldap/config/cn=config.ldif
+      # LDAP_LOG_LEVEL: "-1"
+      # CONTAINER_LOG_LEVEL: "1024"
+      LDAP_REMOVE_CONFIG_AFTER_SETUP: "false"
+      LDAP_ORGANISATION: "{{ ldap_organisation }}"
+      LDAP_DOMAIN: "{{ ldap_domain }}"
+      LDAP_ADMIN_PASSWORD: "{{ ldap_admin_password }}"
+      LDAP_CONFIG_PASSWORD: "{{ ldap_config_password }}"
+      LDAP_READONLY_USER: "True"
+      LDAP_READONLY_USER_USERNAME: "{{ ldap_readonly_user_username }}"
+      LDAP_READONLY_USER_PASSWORD: "{{ ldap_readonly_user_password }}"
+      LDAP_TLS_CRT_FILENAME: cert.pem
+      LDAP_TLS_KEY_FILENAME: key.pem
+      LDAP_TLS_CA_CRT_FILENAME: fullchain.pem
+      LDAP_TLS_VERIFY_CLIENT: never
+      LDAP_BACKUP_TTL: "90"
+      # These are to automatically generate the certs
+      VIRTUAL_HOST: "{{ ldap_virtual_host }}"
+      LETSENCRYPT_HOST: "{{ ldap_virtual_host }}"
+      LETSENCRYPT_EMAIL: "{{ ldap_letsencrypt_email }}"
+  tags: ldap_container
+
+# - name: "enable systemd service"
+#   ansible.builtin.service:
+#     name: "{{ (_container_start_results.podman_systemd | dict2items | list | first).key }}"
+#     enabled: true
+
+- name: enable cronjob to provide letsencrypt certificates for ldap
+  ansible.builtin.cron:
+    name: "provide ldap certs"
+    cron_file: openldap-backup-certs
+    user: root
+    job: diff -q {{ container_storage_dir_base }}/nginx/certs/{{ ldap_virtual_host }}/cert.pem
+           {{ container_storage_dir_base }}/ldap/certs/cert.pem || ( cp -auTL --remove-destination
+           {{ container_storage_dir_base }}/nginx/certs/{{ ldap_virtual_host }} {{ container_storage_dir_base }}/ldap/certs > /dev/null;
+           docker restart openldap-backup )
+  tags: skipttag
+
+- name: install openldap-clients
+  ansible.builtin.package:
+    name: openldap-clients
+  tags: skipttag
+
+- name: add variable to ignore certificate chain
+  ansible.builtin.lineinfile:
+    dest: /etc/openldap/ldap.conf
+    line: "TLS_REQCERT never"
+
+- name: Install python-ldap
+  ansible.builtin.package:
+    name: python-ldap
+  tags: skipttag
+
+- name: wait for ldap service
+  ansible.builtin.wait_for:
+    port: 389
+    timeout: 60
+
+- pause:
+# - name: disable unencrypted connections
+#   community.general.ldap_attr:
+#     dn: cn=cn=config
+#     name: olcTLSCipherSuite
+#     values:
+#       - "SECURE256:+SECURE128:-VERS-TLS-ALL:+VERS-TLS1.2:-RSA:-DHE-DSS:-CAMELLIA-128-CBC:-CAMELLIA-256-CBC:!NULL"
+#     server_uri: ldap://localhost/
+#     bind_dn: "cn=admin,cn=config"
+#     bind_pw: "{{ LDAP_CONFIG_PASSWORD }}"
+#   register: result
+#   # failed_when: >
+#   #   (result.failed == True) and
+#   #   ("'desc': 'Type or value exists'" not in result.details)
+#   tags:
+#     - ldap_config_tls
+# - ansible.builtin.debug:
+#     msg: "result: {{ result }}"
+#   tags:
+#     - ldap_config_tls
+
+- name: enable ppolicy module
+  community.general.ldap_attrs:
+    dn: cn=module{0},cn=config
+    attributes:
+      olcModuleLoad:
+        - "ppolicy"
+    server_uri: "{{ LDAP_AUTH_CONFIG.server_uri }}"
+    bind_dn: "{{ LDAP_AUTH_CONFIG.bind_dn }}"
+    bind_pw: "{{ LDAP_AUTH_CONFIG.bind_pw }}"
+  register: result
+  until:
+    - not ( (result.failed | bool ) and ('Type or value exists' not in result.details) ) or not (result.failed | bool )
+  retries: 10
+  delay: 10
+  failed_when: >
+    (result.failed | bool ) and
+    ("'desc': 'Type or value exists'" not in result.details)
+  tags:
+    - ldap_config_ppolicy
+
+# - ansible.builtin.debug: var=result
+# - ansible.builtin.pause:
+
+- name: enable ppolicy encrypt passwords
+  community.general.ldap_entry:
+    dn: olcOverlay={0}ppolicy,olcDatabase={1}mdb,cn=config
+    objectClass:
+      # - olcConfig
+      - olcOverlayConfig
+      - olcPPolicyConfig
+      # - top
+    attributes:
+      olcOverlay: "{0}ppolicy"
+      olcPPolicyDefault: "cn=default,ou=policies,{{ LDAP_BASE_DN }}"
+      olcPPolicyHashCleartext: "TRUE"
+      # olcPPolicyUseLockout: FALSE
+      # # only for a consumer behind a syncrepl
+      # olcPPolicyForwardUpdates: FALSE
+    server_uri: "{{ LDAP_AUTH_CONFIG.server_uri }}"
+    bind_dn: "{{ LDAP_AUTH_CONFIG.bind_dn }}"
+    bind_pw: "{{ LDAP_AUTH_CONFIG.bind_pw }}"
+  tags:
+    - ldap_config_ppolicy
+
+# - name: enable ppolicy encrypt passwords
+#   community.general.ldap_entry:
+#     dn: "olcOverlay={7}ppolicy,olcDatabase={1}mdb,cn=config"
+#     objectClass:
+#       # - olcConfig
+#       - olcOverlayConfig
+#       - olcPPolicyConfig
+#       # - top
+#     attributes:
+#       olcOverlay: "{7}ppolicy"
+#       olcPPolicyDefault: "cn=default,ou=policies,{{ LDAP_BASE_DN }}"
+#       olcPPolicyHashCleartext: "TRUE"
+#       # olcPPolicyUseLockout: FALSE
+#       # # only for a consumer behind a syncrepl
+#       # olcPPolicyForwardUpdates: FALSE
+#     server_uri: ldap://localhost/
+#     bind_dn: "cn=admin,cn=config"
+#     bind_pw: "{{ LDAP_CONFIG_PASSWORD }}"
+#     state: absent
+#   tags:
+#     - ldap_config_ppolicy
+
+- name: "ldap: create domain ou ou={{ site_domain_ou }},{{ LDAP_BASE_DN }}"
+  community.general.ldap_entry:
+    dn: ou={{ site_domain_ou }},{{ LDAP_BASE_DN }}
+    objectClass: organizationalUnit
+    server_uri: "{{ LDAP_AUTH.server_uri }}"
+    bind_dn: "{{ LDAP_AUTH.bind_dn }}"
+    bind_pw: "{{ LDAP_AUTH.bind_pw }}"
+  tags:
+    - ldap_ou
+
+- name: "ldap: create group of unique names ou ou={{ LDAP_OU_GOUN }},{{ LDAP_BASE_DN }}"
+  community.general.ldap_entry:
+    dn: ou={{ LDAP_OU_GOUN }},{{ LDAP_BASE_DN }}
+    objectClass: organizationalUnit
+    server_uri: "{{ LDAP_AUTH.server_uri }}"
+    bind_dn: "{{ LDAP_AUTH.bind_dn }}"
+    bind_pw: "{{ LDAP_AUTH.bind_pw }}"
+  tags:
+    - ldap_goun
+
+- name: "ldap: create users und groups ou in ou={{ site_domain_ou }},{{ LDAP_BASE_DN }}"
+  community.general.ldap_entry:
+    dn: ou={{ item }},ou={{ site_domain_ou }},{{ LDAP_BASE_DN }}
+    objectClass: organizationalUnit
+    server_uri: "{{ LDAP_AUTH.server_uri }}"
+    bind_dn: "{{ LDAP_AUTH.bind_dn }}"
+    bind_pw: "{{ LDAP_AUTH.bind_pw }}"
+  with_items:
+    - "{{ LDAP_OU_USERS }}"
+    - "{{ LDAP_OU_GROUPS }}"
+  tags:
+    - ldap_ou
+
+- name: create groups
+  community.general.ldap_entry:
+    dn: cn={{ item.key }},ou={{ LDAP_OU_GROUPS }},ou={{ site_domain_ou }},{{ LDAP_BASE_DN }}
+    objectClass: posixGroup
+    attributes:
+      gidNumber: "{{ item.value.gid }}"
+    server_uri: "{{ LDAP_AUTH.server_uri }}"
+    bind_dn: "{{ LDAP_AUTH.bind_dn }}"
+    bind_pw: "{{ LDAP_AUTH.bind_pw }}"
+  with_dict: "{{ site_posix_groups }}"
+  tags:
+    - ldap_groups
+
+#- name: calculate user password hashes
+#  ansible.builtin.shell: "echo -n '{{ item.value.password }}' | openssl dgst -sha256 -binary | openssl enc -base64"
+#  register: hashes
+#  with_dict: "{{ site_posix_users }}"
+#  #when: emailusers is defined
+#  #no_log: true
+#  tags:
+#    - configuration
+#
+#- name: create the users
+#  community.general.ldap_entry:
+#    dn: cn={{item.0.key}},ou={{ LDAP_OU_USERS }},{{ LDAP_BASE_DN }}
+#    objectClass:
+#      - inetOrgPerson
+#      - posixAccount
+#      - top
+#    attributes:
+#      gidNumber: "{{item.0.value.uid}}"
+#      givenName: "{{item.0.value.givenname}}"
+#      homeDirectory: "/home/{{item.0.key}}"
+#      loginShell: /bin/bash
+#      mail: "{{item.0.value.mail}}"
+#      #userPassword: "{SHA512-CRYPT}{{item.value.password}}"
+#      #userPassword: "{sha512}{{item.value.password | password_hash('sha512')}}"
+#      userPassword: "{sha512}{{ item.1.stdout }}"
+#      sn: "{sha512}{{item.0.value.password}}"
+##      sn: "{{item.value.sn}}"
+#      uidNumber: "{{item.0.value.uid}}"
+#      uid: "{{item.0.key}}"
+#    server_uri: "{{ LDAP_AUTH.server_uri }}"
+#    bind_dn: "{{ LDAP_AUTH.bind_dn }}"
+#    bind_pw: "{{ LDAP_AUTH.bind_pw }}"
+#  with_together:
+#     - "{{ site_posix_users }}"
+#     - "{{ hashes }}"
+#  tags: skipttag
+
+- name: create the users
+  community.general.ldap_entry:
+    dn: cn={{ item.key }},ou={{ LDAP_OU_USERS }},ou={{ site_domain_ou }},{{ LDAP_BASE_DN }}
+    objectClass:
+      - inetOrgPerson
+      - posixAccount
+      - top
+    attributes:
+      displayName: "{{ item.value.displayName }}"
+      gidNumber: "{{ item.value.gid }}"
+      givenName: "{{ item.value.givenname }}"
+      homeDirectory: "/home/{{ item.key }}"
+      loginShell: /bin/bash
+      mail: "{{ item.value.mail }}"
+      #userPassword: "{SHA512-CRYPT}{{item.value.password}}"
+      #userPassword: "{sha512}{{item.value.password | password_hash('sha512')}}"
+      #userPassword: "{sha512}{{ item.value.password }}"
+      userPassword: "{{ item.value.password }}"
+      sn: "{{ item.value.sn }}"
+      uidNumber: "{{ item.value.uid }}"
+      uid: "{{ item.key }}"
+    server_uri: "{{ LDAP_AUTH.server_uri }}"
+    bind_dn: "{{ LDAP_AUTH.bind_dn }}"
+    bind_pw: "{{ LDAP_AUTH.bind_pw }}"
+  with_dict: "{{ site_posix_users }}"
+  tags:
+    - ldap_user
+
+- name: Update members of  posix groups
+  community.general.ldap_attrs:
+    #dn: cn={{ item.1 }},ou={{ LDAP_OU_GROUPS }},ou={{ site_domain_ou }},{{ LDAP_BASE_DN }}
+    dn: cn={{ item.1 }},ou={{ LDAP_OU_GROUPS }},ou={{ site_domain_ou }},{{ LDAP_BASE_DN }}
+    attributes:
+      memberUid:
+        - "{{ item.0.name }}"
+    server_uri: "{{ LDAP_AUTH.server_uri }}"
+    bind_dn: "{{ LDAP_AUTH.bind_dn }}"
+    bind_pw: "{{ LDAP_AUTH.bind_pw }}"
+  with_subelements:
+    - "{{ site_posix_users }}"
+    - groups
+  tags:
+    - ldap_member
+
+- name: Make sure group nextcloud exists
+  community.general.ldap_entry:
+    dn: cn=nextcloud,ou={{ LDAP_OU_GOUN }},{{ LDAP_BASE_DN }}
+    objectClass:
+      - groupOfUniqueNames
+    attributes:
+      uniqueMember:
+        - "cn=dummy,ou={{ LDAP_OU_USERS }},ou={{ site_domain_ou }},{{ LDAP_BASE_DN }}"
+    server_uri: "{{ LDAP_AUTH.server_uri }}"
+    bind_dn: "{{ LDAP_AUTH.bind_dn }}"
+    bind_pw: "{{ LDAP_AUTH.bind_pw }}"
+  tags:
+    - ldap_goun
+
+- name: Update members of  group nextcloud
+  community.general.ldap_attrs:
+    dn: cn=nextcloud,ou={{ LDAP_OU_GOUN }},{{ LDAP_BASE_DN }}
+    attributes:
+      uniqueMember:
+        - "cn={{ item }},ou={{ LDAP_OU_USERS }},ou={{ site_domain_ou }},{{ LDAP_BASE_DN }}"
+    server_uri: "{{ LDAP_AUTH.server_uri }}"
+    bind_dn: "{{ LDAP_AUTH.bind_dn }}"
+    bind_pw: "{{ LDAP_AUTH.bind_pw }}"
+  with_items: "{{ site_goun_nextcloud_users }}"
+  tags:
+    - ldap_goun
+
+- name: remove dummy member from group nextcloud
+  community.general.ldap_attrs:
+    dn: cn=nextcloud,ou={{ LDAP_OU_GOUN }},{{ LDAP_BASE_DN }}
+    attributes:
+      uniqueMember:
+        - "cn=dummy,ou={{ LDAP_OU_USERS }},ou={{ site_domain_ou }},{{ LDAP_BASE_DN }}"
+    state: absent
+    server_uri: "{{ LDAP_AUTH.server_uri }}"
+    bind_dn: "{{ LDAP_AUTH.bind_dn }}"
+    bind_pw: "{{ LDAP_AUTH.bind_pw }}"
+  tags:
+    - ldap_goun
