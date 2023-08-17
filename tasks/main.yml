@@ -70,53 +70,87 @@
     # - dns
   tags: firewalld
 
-- name: Create persitent ldap directory below {{ container_storage_dir_base }}
-  ansible.builtin.file:
-    state: directory
-    path: '{{ container_storage_dir_base }}/ldap/{{ item }}'
-    mode: '0750'
-  with_items:
-    - bootstrap-custom
-  tags: skipttag
+# next task returns:
+# - _container_storage_dir_base_local
+# - _container_storage_dir_base
+# - _group, _owner
+# - _systemd_scope
+# - _systemd_service_files_dir
+# - _xdg_runtime_dir
+- name: Include podman_init_vars.yml from sleif.podman
+  ansible.builtin.include_tasks: "{{ lookup('first_found', params) }}"
+  vars:
+    params:
+      files: sleif.podman/tasks/includes/podman_init_vars.yml
+      paths: "{{ lookup('config', 'DEFAULT_ROLES_PATH') }}"
 
-- name: Fill files for bootstrap ldap
-  ansible.builtin.copy:
-    src: bootstrap-custom/
-    dest: '{{ container_storage_dir_base }}/ldap/bootstrap-custom'
-    mode: '0640'
-  tags: skipttag
+# - name: Create persitent ldap directory below {{ _container_storage_dir_base }}
+#   become: "{{ podman_rootless | bool }}"
+#   become_user: "{{ podman_user if podman_rootless | bool else omit }}"
+#   ansible.builtin.file:
+#     state: directory
+#     path: '{{ _container_storage_dir_base }}/ldap/{{ item }}'
+#     mode: '0750'
+#   with_items:
+#     - bootstrap-custom
+#   tags: skipttag
 
 - name: Create persistant openldap data directories
+  become: "{{ podman_rootless | bool }}"
+  become_user: "{{ podman_user if podman_rootless | bool else omit }}"
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
     mode: '0750'
   loop:
-    - '{{ container_storage_dir_base }}/ldap/bootstrap-custom'
-    - '{{ container_storage_dir_base }}/ldap/certs'
-    - '{{ container_storage_dir_base }}/ldap/data'
-    - '{{ container_storage_dir_base }}/ldap/config'
-    - '{{ container_storage_dir_base }}/ldap/backup'
+    - '{{ _container_storage_dir_base }}/ldap/bootstrap-custom'
+    - '{{ _container_storage_dir_base }}/ldap/certs'
+    - '{{ _container_storage_dir_base }}/ldap/data'
+    - '{{ _container_storage_dir_base }}/ldap/config'
+    - '{{ _container_storage_dir_base }}/ldap/backup'
+
+- name: Fill files for bootstrap ldap
+  # become: "{{ podman_rootless | bool }}"
+  # become_user: "{{ podman_user if podman_rootless | bool else omit }}"
+  ansible.builtin.copy:
+    src: bootstrap-custom/
+    dest: '{{ _container_storage_dir_base }}/ldap/bootstrap-custom'
+    mode: '0640'
+    owner: "{{ _owner }}"
+  tags: skipttag
+
+- name: Include role sleif.podman podman_operation pod_create
+  ansible.builtin.include_role:
+    name: sleif.podman
+    apply:
+      tags:
+        - podman_pod_create
+  vars:
+    podman_operation: pod_create
+  tags: always
 
 - name: Osixia-openldap-backup-Container starten
+  become: "{{ podman_rootless | bool }}"
+  become_user: "{{ podman_user if podman_rootless | bool else omit }}"
   containers.podman.podman_container:
-    name: openldap_container
+    name: "{{ container_name }}"
     # hostname: openldap-backup
     image: "docker.io/osixia/openldap-backup:{{ openldap_container_version }}"
-    state: started
+    state: created
     restart_policy: always
-    recreate: true
+    recreate: "{{ podman_container_recreate | d(false) }}"
     # restart: true
     published_ports:
       # - '389:389'
       - '636:636'
+    stop_timeout: 90
     network: "{{ podman_network_name }}"
     volumes:
-      - '{{ container_storage_dir_base }}/ldap/bootstrap-custom:/container/service/slapd/assets/config/bootstrap/ldif/custom:Z'
-      - '{{ container_storage_dir_base }}/ldap/certs:/container/service/slapd/assets/certs:Z'
-      - '{{ container_storage_dir_base }}/ldap/data:/var/lib/ldap:Z'
-      - '{{ container_storage_dir_base }}/ldap/config:/etc/ldap/slapd.d:Z'
-      - '{{ container_storage_dir_base }}/ldap/backup:/data/backup:Z'
+      - '{{ _container_storage_dir_base }}/ldap/bootstrap-custom:/container/service/slapd/assets/config/bootstrap/ldif/custom:Z'
+      - '{{ _container_storage_dir_base }}/ldap/certs:/container/service/slapd/assets/certs:Z'
+      - '{{ _container_storage_dir_base }}/ldap/data:/var/lib/ldap:Z'
+      - '{{ _container_storage_dir_base }}/ldap/config:/etc/ldap/slapd.d:Z'
+      - '{{ _container_storage_dir_base }}/ldap/backup:/data/backup:Z'
     # security_opts: label:type:docker_t
     env:
       # https://www.openldap.org/doc/admin24/runningslapd.html
@@ -132,31 +166,47 @@
       LDAP_READONLY_USER: "True"
       LDAP_READONLY_USER_USERNAME: "{{ ldap_readonly_user_username }}"
       LDAP_READONLY_USER_PASSWORD: "{{ ldap_readonly_user_password }}"
-      LDAP_TLS_CRT_FILENAME: cert.pem
-      LDAP_TLS_KEY_FILENAME: key.pem
-      LDAP_TLS_CA_CRT_FILENAME: fullchain.pem
+      LDAP_TLS_CRT_FILENAME: "{{ ldap_virtual_host }}.crt"
+      LDAP_TLS_KEY_FILENAME: "{{ ldap_virtual_host }}.key"
+      # LDAP_TLS_CA_CRT_FILENAME: fullchain.pem
       LDAP_TLS_VERIFY_CLIENT: never
       LDAP_BACKUP_TTL: "90"
       # These are to automatically generate the certs
       VIRTUAL_HOST: "{{ ldap_virtual_host }}"
       LETSENCRYPT_HOST: "{{ ldap_virtual_host }}"
       LETSENCRYPT_EMAIL: "{{ ldap_letsencrypt_email }}"
+      TZ: "Europe/Berlin"
+    timezone: "Europe/Berlin"
   tags: ldap_container
 
-# - name: "enable systemd service"
-#   ansible.builtin.service:
-#     name: "{{ (_container_start_results.podman_systemd | dict2items | list | first).key }}"
-#     enabled: true
+- name: Include role sleif.podman podman_operation podman_generate_systemd
+  ansible.builtin.include_role:
+    name: sleif.podman
+    apply:
+      tags:
+        - podman_generate_systemd
+  vars:
+    podman_operation: podman_generate_systemd
+    target: "{{ pod_name if pod_name is defined and pod_name | length > 0 else container_name }}"
+  tags: always
 
 - name: Enable cronjob to provide letsencrypt certificates for ldap
+  # become: "{{ podman_rootless | bool }}"
+  # become_user: "{{ podman_user if podman_rootless | bool else omit }}"
   ansible.builtin.cron:
     name: "provide ldap certs"
     cron_file: openldap-backup-certs
     user: root
-    job: "diff -q {{ container_storage_dir_base }}/nginx/certs/{{ ldap_virtual_host }}/cert.pem
-           {{ container_storage_dir_base }}/ldap/certs/cert.pem || ( cp -auTL --remove-destination
-           {{ container_storage_dir_base }}/nginx/certs/{{ ldap_virtual_host }} {{ container_storage_dir_base }}/ldap/certs > /dev/null;
-           podman restart openldap-backup )"
+    job: "diff -q {{ _container_storage_dir_base }}/caddy/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/{{
+           ldap_virtual_host }}/{{ ldap_virtual_host }}.crt
+           {{ _container_storage_dir_base }}/ldap/certs/{{ ldap_virtual_host }}.crt || ( cp -aTL --remove-destination
+           {{ _container_storage_dir_base }}/caddy/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/{{
+           ldap_virtual_host }} {{ _container_storage_dir_base }}/ldap/certs > /dev/null;
+           podman restart {{ container_name }} )"
+    # job: "diff -q {{ _container_storage_dir_base }}/nginx/certs/{{ ldap_virtual_host }}/cert.pem
+    #        {{ _container_storage_dir_base }}/ldap/certs/cert.pem || ( cp -auTL --remove-destination
+    #        {{ _container_storage_dir_base }}/nginx/certs/{{ ldap_virtual_host }} {{ _container_storage_dir_base }}/ldap/certs > /dev/null;
+    #        podman restart openldap-backup )"
   tags: skipttag
 
 - name: Install openldap-clients
