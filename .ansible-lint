@@ -5,9 +5,4 @@ exclude_paths:
 
 skip_list:
   - 'role-name'
-  # - 'var-naming'
-  # - 'line-length'
-  # - 'ignore-errors'
-  # - 'command-instead-of-module'
-  # - 'no-handler'
   - var-naming[no-role-prefix]

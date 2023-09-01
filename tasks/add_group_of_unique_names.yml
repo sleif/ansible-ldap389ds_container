@@ -1,0 +1,41 @@
+---
+
+- name: Make sure group nextcloud exists; dummy user is required
+  community.general.ldap_entry:
+    dn: cn={{ _goun.name }},ou={{ ldap_ou_goun }},{{ ldap_base_dn }}
+    objectClass:
+      - groupOfUniqueNames
+    attributes:
+      uniqueMember:
+        - "cn=dummy,ou={{ ldap_ou_users }},ou={{ site_domain_ou }},{{ ldap_base_dn }}"
+    server_uri: "{{ ldap_auth_admin.server_uri }}"
+    bind_dn: "{{ ldap_auth_admin.bind_dn }}"
+    bind_pw: "{{ ldap_auth_admin.bind_pw }}"
+  tags:
+    - ldap_goun
+
+- name: Update members of  group nextcloud
+  community.general.ldap_attrs:
+    dn: cn={{ _goun.name }},ou={{ ldap_ou_goun }},{{ ldap_base_dn }}
+    attributes:
+      uniqueMember:
+        - "cn={{ item }},ou={{ ldap_ou_users }},ou={{ site_domain_ou }},{{ ldap_base_dn }}"
+    server_uri: "{{ ldap_auth_admin.server_uri }}"
+    bind_dn: "{{ ldap_auth_admin.bind_dn }}"
+    bind_pw: "{{ ldap_auth_admin.bind_pw }}"
+  with_items: "{{ _goun.members }}"
+  tags:
+    - ldap_goun
+
+- name: Remove dummy member from group nextcloud
+  community.general.ldap_attrs:
+    dn: cn={{ _goun.name }},ou={{ ldap_ou_goun }},{{ ldap_base_dn }}
+    attributes:
+      uniqueMember:
+        - "cn=dummy,ou={{ ldap_ou_users }},ou={{ site_domain_ou }},{{ ldap_base_dn }}"
+    state: absent
+    server_uri: "{{ ldap_auth_admin.server_uri }}"
+    bind_dn: "{{ ldap_auth_admin.bind_dn }}"
+    bind_pw: "{{ ldap_auth_admin.bind_pw }}"
+  tags:
+    - ldap_goun
