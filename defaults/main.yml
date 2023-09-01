@@ -5,10 +5,10 @@ container_storage_dir_base: '/srv'
 
 ldap_host: '127.0.0.1'
 ldap_protocol: 'ldap'
-ldap_base_dn: '' # "dc=example,dc=com"
-ldap_admin_password: ''
+ldap_base_dn: "dc=example,dc=com"
+ldap_admin_password: 'admin'
 
-ldap_auth:
+ldap_auth_admin:
   server_uri: "{{ ldap_protocol }}://{{ ldap_host }}"
   bind_dn: "cn=admin,{{ ldap_base_dn }}"
   bind_pw: "{{ ldap_admin_password }}"
@@ -16,6 +16,11 @@ ldap_auth:
 ldap_auth_config:
   server_uri: "{{ ldap_protocol }}://{{ ldap_host }}"
   bind_dn: "cn=admin,cn=config"
-  bind_pw: "{{ LDAP_CONFIG_PASSWORD }}"
+  bind_pw: "{{ ldap_config_password }}"
 
-openldap_container_version: "1.5.0"
+openldap_container_version: "2.5"
+
+site_gouns: []
+ldap_ou_goun: "groupofuniquenames"
+
+certificate_src: "{{ _container_storage_dir_base }}/caddy/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory"
