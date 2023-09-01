@@ -12,7 +12,12 @@ This role runs an OpenLDAP instance on Podman.
 
 ## Dependencies
 
-None
+This role depends on `sleif.podman` and maybe `sleif.caddy_container` for the certificates.
+
+```sh
+ansible-galaxy install sleif.podman --force
+ansible-galaxy install sleif.caddy_container --force
+```
 
 ## Example Playbook
 
@@ -21,7 +26,19 @@ None
   hosts: "openldap.example.com"
   user: root
   vars:
-    container_storage_dir_base: '/srv'
+    podman_networks:
+      podman_network_root:
+        podman_network_name: 'podman_custom'
+        podman_network_subnet: '10.0.0.0/24'
+        podman_network_gateway: '10.0.0.1'
+        podman_network_iprange: '10.0.0.128/25'
+      podman_network_rootless:
+        podman_network_name: 'podman_custom'
+        podman_network_subnet: '10.0.1.0/24'
+        podman_network_gateway: '10.0.1.1'
+        podman_network_iprange: '10.0.1.128/25'
+    podman_rootless: true
+    podman_network_name: "{{ podman_networks.podman_network_rootless.podman_network_name }}"
     site_posix_groups_example_de: {
       johndoe: {gid: 2001},
       janedoe: {gid: 2002}}
@@ -61,6 +78,14 @@ None
           - johndoe
 
   roles:
+    - {role: sleif.podman, tags: "podman_role",
+       podman_operation: "podman_install"}
+    - {role: sleif.caddy_container, tags: "caddy, caddy_container", caddy_container_name: "caddy", caddy_operation: "caddy_container",
+       container_name: caddy}
+    - {role: sleif.caddy_container, tags: "caddy, caddy_container, caddy_certs_for_ldap",
+       container_name: caddy,
+       caddy_operation: caddy_file_server,
+       caddy_target_uri: ldap.example.com}
     - {role: sleif.openldap_container, tags: "openldap_container, ldap_example_de",
        container_name: openldap,
        site_domain_ou: "example_com",
