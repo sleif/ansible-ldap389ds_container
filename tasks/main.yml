@@ -266,6 +266,45 @@
 #   tags:
 #     - ldap_config_ppolicy
 
+- name: Enable memberof module
+  community.general.ldap_attrs:
+    dn: cn=module{0},cn=config
+    attributes:
+      olcModuleLoad:
+        - "memberof.so"
+    server_uri: "{{ ldap_auth_config.server_uri }}"
+    bind_dn: "{{ ldap_auth_config.bind_dn }}"
+    bind_pw: "{{ ldap_auth_config.bind_pw }}"
+  register: result
+  until:
+    - not ( (result.failed | bool ) and ('Type or value exists' not in result.details) ) or not (result.failed | bool )
+  retries: 10
+  delay: 10
+  failed_when: >
+    (result.failed | bool ) and
+    ("'desc': 'Type or value exists'" not in result.details)
+  tags:
+    - ldap_config_memberof
+
+- name: Enable ppolmemberof olcOverlay
+  community.general.ldap_entry:
+    dn: olcOverlay=memberof,olcDatabase={2}mdb,cn=config
+    objectClass:
+      - olcOverlayConfig
+      - olcMemberOf
+    attributes:
+      olcOverlay: "memberof"
+      olcMemberOfGroupOC: "groupOfUniqueNames"
+      olcMemberOfMemberAD: "uniqueMember"
+      olcMemberOfMemberOfAD: "memberOf"
+      olcMemberOfRefint: "TRUE"
+      olcMemberOfDangling: "ignore"
+    server_uri: "{{ ldap_auth_config.server_uri }}"
+    bind_dn: "{{ ldap_auth_config.bind_dn }}"
+    bind_pw: "{{ ldap_auth_config.bind_pw }}"
+  tags:
+    - ldap_config_memberof
+
 - name: Ldap create dcObject
   community.general.ldap_entry:
     dn: "{{ ldap_base_dn }}"
