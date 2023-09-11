@@ -286,7 +286,7 @@
   tags:
     - ldap_config_memberof
 
-- name: Enable ppolmemberof olcOverlay
+- name: Enable memberof olcOverlay
   community.general.ldap_entry:
     dn: olcOverlay=memberof,olcDatabase={2}mdb,cn=config
     objectClass:
