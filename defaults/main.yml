@@ -23,4 +23,4 @@ openldap_container_version: "2.5"
 site_gouns: []
 ldap_ou_goun: "groupofuniquenames"
 
-certificate_src: "{{ _container_storage_dir_base }}/caddy/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory"
+certificate_src: "{{ _container_storage_dir_base }}/{{ caddy_container_name }}/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory"

@@ -1,0 +1,21 @@
+{{ _container_storage_dir_base }}/{{ container_name }}_backups/{{ container_name }}.config.gz {
+ daily
+ rotate 20
+ copy
+ dateext
+ dateyesterday
+ missingok
+ notifempty
+ create 660 root root
+}
+
+{{ _container_storage_dir_base }}/{{ container_name }}_backups/{{ container_name }}.data.gz {
+ daily
+ rotate 20
+ copy
+ dateext
+ dateyesterday
+ missingok
+ notifempty
+ create 660 root root
+}
