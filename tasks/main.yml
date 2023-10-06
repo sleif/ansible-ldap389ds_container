@@ -137,7 +137,7 @@
       # https://www.openldap.org/doc/admin24/runningslapd.html
       # https://www.openldap.org/doc/admin24/slapdconf2.html
       # consider olcLogLevel -1 setting in ldap/config/cn=config.ldif
-      BITNAMI_DEBUG: "yes"
+      BITNAMI_DEBUG: "no"
       # LDAP_LOGLEVEL: "-1"
       # CONTAINER_LOG_LEVEL: "1024"
       LDAP_PORT_NUMBER: "389"
