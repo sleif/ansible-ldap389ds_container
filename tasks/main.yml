@@ -109,6 +109,7 @@
   loop:
     - {name: 'ldap_admin_password', data: '{{ ldap_admin_password }}'}
     - {name: 'ldap_config_password', data: '{{ ldap_config_password }}'}
+  no_log: true
   tags: podman_secrets
 
 - name: Create Container bitnami/openldap
