@@ -231,9 +231,10 @@
     port: 636
     timeout: 60
 
+# depending on using a backuo you have to adapt dn: module{0} vs. module{1}
 - name: Enable memberof module
   community.general.ldap_attrs:
-    dn: cn=module{0},cn=config
+    dn: cn=module{1},cn=config
     attributes:
       olcModuleLoad:
         - "memberof.so"
