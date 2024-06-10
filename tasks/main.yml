@@ -107,8 +107,8 @@
     data: "{{ item.data }}"
     skip_existing: true
   loop:
-    - {name: 'ldap_admin_password', data: '{{ ldap_admin_password }}'}
-    - {name: 'ldap_config_password', data: '{{ ldap_config_password }}'}
+    - {name: 'ldap_admin_password', data: '{{ ldap_auth_admin.bind_pw }}'}
+    - {name: 'ldap_config_password', data: '{{ ldap_auth_config.bind_pw }}'}
   no_log: true
   tags: podman_secrets
 
