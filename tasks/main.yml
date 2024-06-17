@@ -118,13 +118,13 @@
   containers.podman.podman_container:
     name: "{{ container_name }}"
     image: "docker.io/bitnami/openldap:{{ openldap_container_version }}"
-    state: created
-    restart_policy: always
-    recreate: "{{ podman_container_recreate | d(false) }}"
+    state: quadlet
+    # restart_policy: always
+    # recreate: "{{ podman_container_recreate | d(false) }}"
     # restart: true
     published_ports:
       - '636:636'
-    stop_timeout: 90
+    # stop_timeout: 90
     network: "slirp4netns:port_handler=slirp4netns"
     # network: "{{ podman_network_name }}"
     volumes:
@@ -168,7 +168,68 @@
       LDAP_PPOLICY_HASH_CLEARTEXT: "yes"
       TZ: "Europe/Berlin"
     timezone: "Europe/Berlin"
+    quadlet_options:
+      - "AutoUpdate=local"
+      - |
+        [Service]
+        Restart=always
+        TimeoutStartSec=900
+        TimeoutStopSec=300
+        [Install]
+        WantedBy=default.target
+  register: _quadlet_file_status
   tags: ldap_container
+
+# - name: Podman generate systemd | gather info about the pod {{ target }}
+#   become: "{{ podman_rootless | d(true) | bool }}"
+#   become_user: "{{ podman_user if podman_rootless | d(true) | bool else omit }}"
+#   containers.podman.podman_pod_info:
+#     name: "{{ target }}"
+#   register: _pod_info
+# # - debug: var=_pod_info
+# # - debug:
+# #     msg: "{{ _pod_info.pods[0].State }}"
+# # - pause:
+
+# - name: Podman generate systemd | gather info about the container {{ target }}
+#   become: "{{ podman_rootless | d(true) | bool }}"
+#   become_user: "{{ podman_user if podman_rootless | d(true) | bool else omit }}"
+#   containers.podman.podman_container_info:
+#     name: "{{ target }}"
+#   register: _container_info
+#   when:
+#     - _pod_info.pods | length == 0
+# # - debug: var=_container_info
+# # - pause:
+
+# - name: Podman generate systemd | generate _target_state from _pod_info or _container_info
+#   ansible.builtin.set_fact:
+#     _target_state: "{{ _pod_info.pods[0].State | lower if _pod_info.pods | length > 0 else _container_info.containers[0].State.Status | lower }}"
+# # - debug: var=_target_state
+# # - pause:
+
+# - name: Podman generate systemd | reload systemd service
+#   become: "{{ podman_rootless | d(true) | bool }}"
+#   become_user: "{{ podman_user if podman_rootless | d(true) | bool else omit }}"
+#   environment:
+#     XDG_RUNTIME_DIR: "{{ _xdg_runtime_dir }}"
+#   ansible.builtin.systemd_service:
+#     daemon_reload: true
+#     scope: "{{ _systemd_scope }}"
+#   when:
+#     - _quadlet_file.changed | bool  # noqa: no-handler
+
+# - name: Podman generate systemd | start/restart systemd service for {{ 'pod-' + target if _pod_info.pods | length > 0 else 'container-' + target }}
+#   become: "{{ podman_rootless | d(true) | bool }}"
+#   become_user: "{{ podman_user if podman_rootless | d(true) | bool else omit }}"
+#   environment:
+#     XDG_RUNTIME_DIR: "{{ _xdg_runtime_dir }}"
+#   ansible.builtin.systemd_service:
+#     name: "{{ 'pod-' + target if _pod_info.pods | length > 0 else 'container-' + target }}"
+#     daemon_reload: true
+#     # enabled: true
+#     scope: "{{ _systemd_scope }}"
+#     state: "{{ 'restarted' if _quadlet_file.changed | bool or _target_state != 'running' else 'started' }}"
 
 - name: Include role sleif.podman podman_operation podman_generate_systemd
   ansible.builtin.include_role:
@@ -179,6 +240,7 @@
   vars:
     podman_operation: podman_generate_systemd
     target: "{{ pod_name if pod_name | d('') is truthy else container_name }}"
+    quadlet: "{{ _quadlet_file_status }}"
   tags: always
 
 - name: Enable cronjob to provide letsencrypt certificates for ldap
