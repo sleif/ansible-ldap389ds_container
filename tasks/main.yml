@@ -69,7 +69,7 @@
   delay: 10
   tags: ldapcron
 
-- name: include_role sleif.podman podman_operation podman_create_container for vtt-pf2e
+- name: include_role sleif.podman podman_operation podman_create_container for openldap
   ansible.builtin.include_role:
     name: sleif.podman
     apply:
