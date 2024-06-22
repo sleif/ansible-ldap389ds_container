@@ -53,25 +53,14 @@
       paths: "{{ lookup('config', 'DEFAULT_ROLES_PATH') }}"
   tags: always
 
-- name: Create persistant openldap data directories
-  become: "{{ podman_rootless | bool }}"
-  become_user: "{{ podman_user if podman_rootless | bool else omit }}"
-  ansible.builtin.file:
-    path: "{{ item.path }}"
-    state: directory
-    mode: '{{ item.mode }}'
-  loop:
-    - {path: '{{ _container_storage_dir_base }}/{{ container_name }}/certs', mode: '0700'}
-    - {path: '{{ _container_storage_dir_base_local }}/{{ container_name }}/data', mode: '0770'}
-
 - name: Initial fill certificate directory
   become: "{{ podman_rootless | bool }}"
   become_user: "{{ podman_user if podman_rootless | bool else omit }}"
   ansible.builtin.shell: |
     podman unshare diff -q {{ certificate_src }}/{{
-    ldap_host }}/{{ ldap_host }}.crt {{ _container_storage_dir_base }}/{{ container_name }}/certs/{{ ldap_host }}.crt || (
-    podman unshare cp -aTLv --remove-destination {{ certificate_src }}/{{ ldap_host }} {{ _container_storage_dir_base }}/{{ container_name }}/certs;
-    podman unshare chown -Rh {{ podman_user }}:{{ podman_group }} {{ _container_storage_dir_base }}/{{ container_name }}/certs)
+    ldap_host }}/{{ ldap_host }}.crt {{ _container_storage_dir_base }}/{{ openldap_container_name }}/certs/{{ ldap_host }}.crt || (
+    podman unshare cp -aTLv --remove-destination {{ certificate_src }}/{{ ldap_host }} {{ _container_storage_dir_base }}/{{ openldap_container_name }}/certs;
+    podman unshare chown -Rh {{ podman_user }}:{{ podman_group }} {{ _container_storage_dir_base }}/{{ openldap_container_name }}/certs)
   register: _result
   changed_when: _result.rc != 0
   until:
@@ -80,168 +69,71 @@
   delay: 10
   tags: ldapcron
 
-- name: Include role sleif.podman podman_operation podman_pod_create
+- name: include_role sleif.podman podman_operation podman_create_container for vtt-pf2e
   ansible.builtin.include_role:
     name: sleif.podman
     apply:
       tags:
-        - podman_pod_create
+        - podman_container_create
   vars:
-    podman_operation: podman_pod_create
-  tags: always
-
-- name: Pull container image bitnami/openldap
-  become: "{{ podman_rootless | bool }}"
-  become_user: "{{ podman_user if podman_rootless | bool else omit }}"
-  containers.podman.podman_image:
-    name: "docker.io/bitnami/openldap"
-    tag: "{{ openldap_container_version }}"
-    force: true
-
-- name: Create Podman secrets
-  become: "{{ podman_rootless | bool }}"
-  become_user: "{{ podman_user if podman_rootless | bool else omit }}"
-  containers.podman.podman_secret:
-    state: present
-    name: "{{ item.name }}"
-    data: "{{ item.data }}"
-    skip_existing: true
-  loop:
-    - {name: 'ldap_admin_password', data: '{{ ldap_auth_admin.bind_pw }}'}
-    - {name: 'ldap_config_password', data: '{{ ldap_auth_config.bind_pw }}'}
-  no_log: true
-  tags: podman_secrets
-
-- name: Create Container bitnami/openldap
-  become: "{{ podman_rootless | bool }}"
-  become_user: "{{ podman_user if podman_rootless | bool else omit }}"
-  containers.podman.podman_container:
-    name: "{{ container_name }}"
-    image: "docker.io/bitnami/openldap:{{ openldap_container_version }}"
-    state: quadlet
-    # restart_policy: always
-    # recreate: "{{ podman_container_recreate | d(false) }}"
-    # restart: true
-    published_ports:
-      - '636:636'
-    # stop_timeout: 90
-    network: "slirp4netns:port_handler=slirp4netns"
-    # network: "{{ podman_network_name }}"
-    volumes:
-      - '{{ _container_storage_dir_base }}/{{ container_name }}/certs:/opt/bitnami/openldap/certs:Z'
-      - '{{ _container_storage_dir_base_local }}/{{ container_name }}/data:/bitnami/openldap:Z'
-    # security_opts: label:type:docker_t
-    secrets:
-      - ldap_admin_password
-      - ldap_config_password
-    env:
-      # https://www.openldap.org/doc/admin24/runningslapd.html
-      # https://www.openldap.org/doc/admin24/slapdconf2.html
-      # consider olcLogLevel -1 setting in ldap/config/cn=config.ldif
-      BITNAMI_DEBUG: "no"
-      # LDAP_LOGLEVEL: "-1"
-      # CONTAINER_LOG_LEVEL: "1024"
-      LDAP_PORT_NUMBER: "389"
-      LDAP_LDAPS_PORT_NUMBER: "636"
-      LDAP_ROOT: "{{ ldap_base_dn }}"
-      LDAP_ADMIN_USER: "admin"
-      LDAP_ADMIN_PASSWORD_FILE: "/run/secrets/ldap_admin_password"
-      # LDAP_ADMIN_PASSWORD: "{{ ldap_admin_password }}"
-      LDAP_CONFIG_ADMIN_ENABLED: "yes"
-      LDAP_CONFIG_ADMIN_USER: "admin"
-      LDAP_CONFIG_ADMIN_PASSWORD_FILE: "/run/secrets/ldap_config_password"
-      # LDAP_CONFIG_ADMIN_PASSWORD: "{{ ldap_config_password }}"
-      LDAP_USER_DC: "{{ ldap_user_dc | d('users') }}"
-      # LDAP_USERS: "{{ ldap_readonly_user_username }}"
-      # LDAP_PASSWORDS: "{{ ldap_readonly_user_password }}"
-      LDAP_PASSWORDS: ""
-      LDAP_SKIP_DEFAULT_TREE: "yes"
-      LDAP_ENABLE_TLS: "yes"
-      # LDAP_REQUIRE_TLS: "yes"
-      LDAP_TLS_CERT_FILE: "/opt/bitnami/openldap/certs/{{ ldap_host }}.crt"
-      LDAP_TLS_KEY_FILE: "/opt/bitnami/openldap/certs/{{ ldap_host }}.key"
-      LDAP_TLS_CA_FILE: "/opt/bitnami/openldap/certs/{{ ldap_host }}.crt"
-      # LDAP_TLS_DH_PARAMS_FILE:
-      LDAP_TLS_VERIFY_CLIENTS: "never"
-      LDAP_ALLOW_ANON_BINDING: "no"
-      LDAP_CONFIGURE_PPOLICY: "yes"
-      LDAP_PPOLICY_HASH_CLEARTEXT: "yes"
-      TZ: "Europe/Berlin"
-    timezone: "Europe/Berlin"
-    quadlet_options:
-      - "AutoUpdate=local"
-      - |
-        [Service]
-        Restart=always
-        TimeoutStartSec=900
-        TimeoutStopSec=300
-        [Install]
-        WantedBy=default.target
-  register: _quadlet_file_status
-  tags: ldap_container
-
-# - name: Podman generate systemd | gather info about the pod {{ target }}
-#   become: "{{ podman_rootless | d(true) | bool }}"
-#   become_user: "{{ podman_user if podman_rootless | d(true) | bool else omit }}"
-#   containers.podman.podman_pod_info:
-#     name: "{{ target }}"
-#   register: _pod_info
-# # - debug: var=_pod_info
-# # - debug:
-# #     msg: "{{ _pod_info.pods[0].State }}"
-# # - pause:
-
-# - name: Podman generate systemd | gather info about the container {{ target }}
-#   become: "{{ podman_rootless | d(true) | bool }}"
-#   become_user: "{{ podman_user if podman_rootless | d(true) | bool else omit }}"
-#   containers.podman.podman_container_info:
-#     name: "{{ target }}"
-#   register: _container_info
-#   when:
-#     - _pod_info.pods | length == 0
-# # - debug: var=_container_info
-# # - pause:
-
-# - name: Podman generate systemd | generate _target_state from _pod_info or _container_info
-#   ansible.builtin.set_fact:
-#     _target_state: "{{ _pod_info.pods[0].State | lower if _pod_info.pods | length > 0 else _container_info.containers[0].State.Status | lower }}"
-# # - debug: var=_target_state
-# # - pause:
-
-# - name: Podman generate systemd | reload systemd service
-#   become: "{{ podman_rootless | d(true) | bool }}"
-#   become_user: "{{ podman_user if podman_rootless | d(true) | bool else omit }}"
-#   environment:
-#     XDG_RUNTIME_DIR: "{{ _xdg_runtime_dir }}"
-#   ansible.builtin.systemd_service:
-#     daemon_reload: true
-#     scope: "{{ _systemd_scope }}"
-#   when:
-#     - _quadlet_file.changed | bool  # noqa: no-handler
-
-# - name: Podman generate systemd | start/restart systemd service for {{ 'pod-' + target if _pod_info.pods | length > 0 else 'container-' + target }}
-#   become: "{{ podman_rootless | d(true) | bool }}"
-#   become_user: "{{ podman_user if podman_rootless | d(true) | bool else omit }}"
-#   environment:
-#     XDG_RUNTIME_DIR: "{{ _xdg_runtime_dir }}"
-#   ansible.builtin.systemd_service:
-#     name: "{{ 'pod-' + target if _pod_info.pods | length > 0 else 'container-' + target }}"
-#     daemon_reload: true
-#     # enabled: true
-#     scope: "{{ _systemd_scope }}"
-#     state: "{{ 'restarted' if _quadlet_file.changed | bool or _target_state != 'running' else 'started' }}"
-
-- name: Include role sleif.podman podman_operation podman_generate_systemd
-  ansible.builtin.include_role:
-    name: sleif.podman
-    apply:
-      tags:
-        - podman_generate_systemd
-  vars:
-    podman_operation: podman_generate_systemd
-    target: "{{ pod_name if pod_name | d('') is truthy else container_name }}"
-    quadlet: "{{ _quadlet_file_status }}"
-  tags: always
+    # podman_rootless: true
+    # podman_network_name: "{{ podman_networks.podman_network_rootless.podman_network_name if podman_rootless | bool else
+    #   podman_networks.podman_network_root.podman_network_name }}"
+    podman_operation: podman_container_create
+    container_name: '{{ openldap_container_name }}'
+    target: "{{ pod_name if pod_name | d('') is truthy else openldap_container_name }}"
+    _container:
+      name: '{{ container_name }}'
+      image:
+        name: 'docker.io/bitnami/openldap'
+        tag: '{{ openldap_container_version }}'
+      pod: "{{ pod_name | default('') }}"
+      # network: "{{ podman_network_name if pod_name | d('') is falsy else [] }}"
+      network: "slirp4netns:port_handler=slirp4netns"
+      # security_opts: label:type:docker_t
+      publish: "{{ '636:636' if pod_name | d('') is falsy else [] }}"
+      volumes:
+        - {'host': '{{ _container_storage_dir_base }}/{{ openldap_container_name }}/certs', 'target': '/opt/bitnami/openldap/certs:Z', 'mode': '0700'}
+        - {'host': '{{ _container_storage_dir_base_local }}/{{ openldap_container_name }}/data', 'target': '/bitnami/openldap:Z', 'mode': '0770'}
+      secrets:
+        - {name: 'ldap_admin_password', data: '{{ ldap_auth_admin.bind_pw }}'}
+        - {name: 'ldap_config_password', data: '{{ ldap_auth_config.bind_pw }}'}
+      env:
+        # https://www.openldap.org/doc/admin24/runningslapd.html
+        # https://www.openldap.org/doc/admin24/slapdconf2.html
+        # consider olcLogLevel -1 setting in ldap/config/cn=config.ldif
+        BITNAMI_DEBUG: "no"
+        # LDAP_LOGLEVEL: "-1"
+        # CONTAINER_LOG_LEVEL: "1024"
+        LDAP_PORT_NUMBER: "389"
+        LDAP_LDAPS_PORT_NUMBER: "636"
+        LDAP_ROOT: "{{ ldap_base_dn }}"
+        LDAP_ADMIN_USER: "admin"
+        LDAP_ADMIN_PASSWORD_FILE: "/run/secrets/ldap_admin_password"
+        # LDAP_ADMIN_PASSWORD: "{{ ldap_admin_password }}"
+        LDAP_CONFIG_ADMIN_ENABLED: "yes"
+        LDAP_CONFIG_ADMIN_USER: "admin"
+        LDAP_CONFIG_ADMIN_PASSWORD_FILE: "/run/secrets/ldap_config_password"
+        # LDAP_CONFIG_ADMIN_PASSWORD: "{{ ldap_config_password }}"
+        LDAP_USER_DC: "{{ ldap_user_dc | d('users') }}"
+        # LDAP_USERS: "{{ ldap_readonly_user_username }}"
+        # LDAP_PASSWORDS: "{{ ldap_readonly_user_password }}"
+        LDAP_PASSWORDS: ""
+        LDAP_SKIP_DEFAULT_TREE: "yes"
+        LDAP_ENABLE_TLS: "yes"
+        # LDAP_REQUIRE_TLS: "yes"
+        LDAP_TLS_CERT_FILE: "/opt/bitnami/openldap/certs/{{ ldap_host }}.crt"
+        LDAP_TLS_KEY_FILE: "/opt/bitnami/openldap/certs/{{ ldap_host }}.key"
+        LDAP_TLS_CA_FILE: "/opt/bitnami/openldap/certs/{{ ldap_host }}.crt"
+        # LDAP_TLS_DH_PARAMS_FILE:
+        LDAP_TLS_VERIFY_CLIENTS: "never"
+        LDAP_ALLOW_ANON_BINDING: "no"
+        LDAP_CONFIGURE_PPOLICY: "yes"
+        LDAP_PPOLICY_HASH_CLEARTEXT: "yes"
+        TZ: "Europe/Berlin"
+      timezone: "Europe/Berlin"
+  # no_log: true
+  tags: podman_container_create
 
 - name: Enable cronjob to provide letsencrypt certificates for ldap
   ansible.builtin.cron:
@@ -249,19 +141,11 @@
     cron_file: openldap_certificate_update
     user: "{{ podman_user }}"
     job: "podman unshare diff -q {{ certificate_src }}/{{
-          ldap_host }}/{{ ldap_host }}.crt {{ _container_storage_dir_base }}/{{ container_name }}/certs/{{ ldap_host }}.crt || (
-          podman unshare cp -aTLv --remove-destination {{ certificate_src }}/{{ ldap_host }} {{ _container_storage_dir_base }}/{{ container_name }}/certs;
-          podman unshare chown -Rh {{ podman_user }}:{{ podman_group }} {{ _container_storage_dir_base }}/{{ container_name }}/certs;
-          podman restart {{ container_name }} > /dev/null )"
-    # job: "diff -q {{ _container_storage_dir_base }}/caddy/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/{{
-    #        ldap_host }}/{{ ldap_host }}.crt
-    #        {{ _container_storage_dir_base }}/{{ container_name }}/certs/{{ ldap_host }}.crt || ( cp -aTL --remove-destination
-    #        {{ _container_storage_dir_base }}/caddy/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/{{
-    #        ldap_host }} {{ _container_storage_dir_base }}/{{ container_name }}/certs > /dev/null;
-    #        curl -o {{ _container_storage_dir_base }}/{{ container_name }}/certs/chain2.pem https://letsencrypt.org/certs/lets-encrypt-r3.pem;
-    #        cat {{ _container_storage_dir_base }}/{{ container_name }}/certs/{{ ldap_host }}.crt >> {{
-    #        _container_storage_dir_base }}/{{ container_name }}/certs/chain2.pem;
-    #        podman restart {{ container_name }} )"
+          ldap_host }}/{{ ldap_host }}.crt {{ _container_storage_dir_base }}/{{ openldap_container_name }}/certs/{{ ldap_host }}.crt || (
+          podman unshare cp -aTLv --remove-destination {{ certificate_src }}/{{ ldap_host }} {{ _container_storage_dir_base }}/{{
+          openldap_container_name }}/certs;
+          podman unshare chown -Rh {{ podman_user }}:{{ podman_group }} {{ _container_storage_dir_base }}/{{ openldap_container_name }}/certs;
+          podman restart {{ openldap_container_name }} > /dev/null )"
   tags: ldapcron
 
 - name: Ensure cron mail go to root
@@ -335,9 +219,9 @@
 
 # openldap config restore: slapadd -c -F /etc/ldap/slapd.d -n 0 openldap.config
 # openldap data restore: slapadd -c -F /etc/ldap/slapd.d -n 2 openldap.data
-- name: Create backup directory for {{ container_name }}
+- name: Create backup directory for {{ openldap_container_name }}
   ansible.builtin.file:
-    path: "{{ _container_storage_dir_base }}/{{ container_name }}_backups"
+    path: "{{ _container_storage_dir_base }}/{{ openldap_container_name }}_backups"
     state: directory
     owner: "{{ _owner }}"
     group: "{{ _group }}"
@@ -360,9 +244,9 @@
     name: "Daily openldap config backup"
     minute: "21"
     hour: "*/4"
-    job: "podman exec {{ container_name }} sh -c '/opt/bitnami/openldap/sbin/slapcat -F /bitnami/openldap/slapd.d -n 0' >
-      {{ _container_storage_dir_base }}/{{ container_name }}_backups/{{ container_name }}.config;
-      gzip -f {{ _container_storage_dir_base }}/{{ container_name }}_backups/{{ container_name }}.config"
+    job: "podman exec {{ openldap_container_name }} sh -c '/opt/bitnami/openldap/sbin/slapcat -F /bitnami/openldap/slapd.d -n 0' >
+      {{ _container_storage_dir_base }}/{{ openldap_container_name }}_backups/{{ openldap_container_name }}.config;
+      gzip -f {{ _container_storage_dir_base }}/{{ openldap_container_name }}_backups/{{ openldap_container_name }}.config"
   tags:
     - openldap_backup
 
@@ -373,16 +257,16 @@
     name: "Daily openldap data backup"
     minute: "22"
     hour: "*/4"
-    job: "podman exec {{ container_name }} sh -c '/opt/bitnami/openldap/sbin/slapcat -F /bitnami/openldap/slapd.d -n 2' >
-      {{ _container_storage_dir_base }}/{{ container_name }}_backups/{{ container_name }}.data;
-      gzip -f {{ _container_storage_dir_base }}/{{ container_name }}_backups/{{ container_name }}.data"
+    job: "podman exec {{ openldap_container_name }} sh -c '/opt/bitnami/openldap/sbin/slapcat -F /bitnami/openldap/slapd.d -n 2' >
+      {{ _container_storage_dir_base }}/{{ openldap_container_name }}_backups/{{ openldap_container_name }}.data;
+      gzip -f {{ _container_storage_dir_base }}/{{ openldap_container_name }}_backups/{{ openldap_container_name }}.data"
   tags:
     - openldap_backup
 
 - name: Configure logrotate for the database dump
   ansible.builtin.template:
     src: logrotate.cfg.j2
-    dest: "/etc/logrotate.d/{{ container_name }}.cfg"
+    dest: "/etc/logrotate.d/{{ openldap_container_name }}.cfg"
     mode: '0644'
   tags:
     - openldap_backup
@@ -405,7 +289,7 @@
     state: "{{ item.state }}"
   register: filecontext
   with_items:
-    - {target: '{{ _container_storage_dir_base }}/{{ container_name }}_backups(/.*)?', setype: 'var_log_t', state: 'present'}
+    - {target: '{{ _container_storage_dir_base }}/{{ openldap_container_name }}_backups(/.*)?', setype: 'var_log_t', state: 'present'}
   when:
     - ansible_selinux and ansible_selinux.status == "enabled"
   tags:
@@ -415,7 +299,7 @@
   ansible.builtin.command: |
     restorecon -F -R -v {{ item.target }}
   with_items:
-    - {index: 0, target: '{{ _container_storage_dir_base }}/{{ container_name }}_backups'}
+    - {index: 0, target: '{{ _container_storage_dir_base }}/{{ openldap_container_name }}_backups'}
   when:
     - filecontext.results[item.index] is changed or _backup_dir_create.changed | bool
     - ansible_selinux and ansible_selinux.status == "enabled"
@@ -659,10 +543,10 @@
           ansible.builtin.shell: |
             cd /var/tmp/ldifs
             gunzip -f /var/tmp/ldifs/backup.ldif.gz
-            podman cp /var/tmp/ldifs {{ container_name }}:/ldifs_manually
-            # podman exec {{ container_name }} ldapadd -f /ldifs_manually/backup.ldif -H 'ldapi:///' -D "cn=admin,{{
+            podman cp /var/tmp/ldifs {{ openldap_container_name }}:/ldifs_manually
+            # podman exec {{ openldap_container_name }} ldapadd -f /ldifs_manually/backup.ldif -H 'ldapi:///' -D "cn=admin,{{
             ldap_base_dn }} " -w {{ ldap_admin_password }} -c
-            podman exec {{ container_name }} slapadd -c -n 2 -l /ldifs_manually/backup.ldif -F /opt/bitnami/openldap/etc/slapd.d
+            podman exec {{ openldap_container_name }} slapadd -c -n 2 -l /ldifs_manually/backup.ldif -F /opt/bitnami/openldap/etc/slapd.d
             rm -rf /var/tmp/ldifs
           changed_when: true
           no_log: true

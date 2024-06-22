@@ -1,4 +1,4 @@
-{{ _container_storage_dir_base }}/{{ container_name }}_backups/{{ container_name }}.config.gz {
+{{ _container_storage_dir_base }}/{{ openldap_container_name }}_backups/{{ openldap_container_name }}.config.gz {
  daily
  rotate 20
  copy
@@ -9,7 +9,7 @@
  create 660 root root
 }
 
-{{ _container_storage_dir_base }}/{{ container_name }}_backups/{{ container_name }}.data.gz {
+{{ _container_storage_dir_base }}/{{ openldap_container_name }}_backups/{{ openldap_container_name }}.data.gz {
  daily
  rotate 20
  copy
