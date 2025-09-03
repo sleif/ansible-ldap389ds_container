@@ -3,7 +3,7 @@
 ## Prepare the backup ldif file for the import process
 
 ```sh
-BACKUPFILE=openldap.data
+BACKUPFILE=ldap389ds.data
 mkdir -p /tmp/ldifs
 cp backup/${BACKUPFILE}.gz /tmp/ldifs/backup.ldif.gz.orig
 cd /tmp/ldifs

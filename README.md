@@ -1,6 +1,6 @@
-# sleif.openldap_container
+# sleif.ldap389ds_container
 
-This role runs an OpenLDAP instance on Podman.
+This role runs an ldap389ds instance on Podman.
 
 ## Requirements
 
@@ -22,8 +22,8 @@ ansible-galaxy install sleif.caddy_container --force
 ## Example Playbook
 
 ```yml
-- name: VM openldap.example.com
-  hosts: "openldap.example.com"
+- name: VM ldap389ds.example.com
+  hosts: "ldap389ds.example.com"
   user: root
   vars:
     podman_networks:
@@ -86,8 +86,8 @@ ansible-galaxy install sleif.caddy_container --force
        container_name: caddy,
        caddy_operation: caddy_file_server,
        caddy_target_uri: ldap.example.com}
-    - {role: sleif.openldap_container, tags: "openldap_container, ldap_example_de",
-       container_name: openldap,
+    - {role: sleif.ldap389ds_container, tags: "ldap389ds_container, ldap_example_de",
+       container_name: ldap389ds,
        site_domain_ou: "example_com",
        site_posix_users: "{{ site_posix_users_example_de }}",
        site_posix_groups: "{{ site_posix_groups_example_de }}",

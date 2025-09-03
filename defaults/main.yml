@@ -1,6 +1,5 @@
 ---
 
-# sleif/roles/osixia_openldap_backup_container/defaults/main.yml
 container_storage_dir_base: '/srv'
 
 ldap_host: '127.0.0.1'
