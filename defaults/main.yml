@@ -18,7 +18,9 @@ ldap_auth_config:
   bind_dn: "cn=admin,cn=config"
   bind_pw: "{{ ldap_config_password }}"
 
-openldap_container_version: "2.5"
+ldap389ds_container_version: 'c9s'
+# ldap389ds_container_version: 'latest'
+ldap389ds_container_root_uid: '389'
 
 site_gouns: []
 ldap_ou_goun: "groupofuniquenames"

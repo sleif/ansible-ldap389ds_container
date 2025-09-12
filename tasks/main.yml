@@ -53,23 +53,44 @@
       paths: "{{ lookup('config', 'DEFAULT_ROLES_PATH') }}"
   tags: always
 
+- name: Create certificate update script
+  ansible.builtin.copy:
+    dest: /usr/local/bin/ldap389ds_certificate_update.sh
+    content: |
+      #!/bin/bash
+      podman unshare mkdir -p {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}/data;
+      podman unshare mkdir -p {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}/tls/ca;
+      podman unshare diff -q {{ certificate_src }}/{{
+      ldap_host }}/{{ ldap_host }}.crt {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}/tls/{{ ldap_host }}.crt || (
+      podman unshare cp -aTLv --remove-destination {{ certificate_src }}/{{ ldap_host }} {{ _container_storage_dir_base }}/{{
+      ldap389ds_container_name }}/tls;
+      podman unshare csplit -z -f {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}/tls/ca/ca -b '%02d'.crt {{
+      _container_storage_dir_base }}/{{ ldap389ds_container_name }}/tls/{{ ldap_host }}.crt '/-----BEGIN CERTIFICATE-----/' '{*}' -q;
+      podman unshare mv {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}/tls/ca/ca00.crt {{ _container_storage_dir_base }}/{{
+      ldap389ds_container_name }}/tls/server.crt;
+      podman unshare mv {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}/tls/{{ ldap_host }}.key {{ _container_storage_dir_base }}/{{
+      ldap389ds_container_name }}/tls/server.key;
+      podman unshare chown -Rh {{ ldap389ds_container_root_uid }}:{{ ldap389ds_container_root_uid }}  {{ _container_storage_dir_base }}/{{
+      ldap389ds_container_name }}/tls {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}/data
+      )
+    mode: '0755'
+  tags: ldapcron
+
 - name: Initial fill certificate directory
   become: "{{ podman_rootless | bool }}"
   become_user: "{{ podman_user if podman_rootless | bool else omit }}"
-  ansible.builtin.shell: |
-    podman unshare diff -q {{ certificate_src }}/{{
-    ldap_host }}/{{ ldap_host }}.crt {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}/certs/{{ ldap_host }}.crt || (
-    podman unshare cp -aTLv --remove-destination {{ certificate_src }}/{{ ldap_host }} {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}/certs;
-    podman unshare chown -Rh {{ podman_user }}:{{ podman_group }} {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}/certs)
+  ansible.builtin.command: /usr/local/bin/ldap389ds_certificate_update.sh
   register: _result
   changed_when: _result.rc != 0
   until:
     - _result.rc == 0
-  retries: 10
+  retries: 1
   delay: 10
   tags: ldapcron
 
+# container initialization: /usr/libexec/dirsrv/dscontainer
 - name: include_role sleif.podman podman_operation podman_create_container for ldap389ds
+  when: false
   ansible.builtin.include_role:
     name: sleif.podman
     apply:
@@ -85,51 +106,46 @@
     _container:
       name: '{{ container_name }}'
       image:
-        name: 'docker.io/bitnami/openldap'
+        name: 'quay.io/389ds/dirsrv'
         tag: '{{ ldap389ds_container_version }}'
       pod: "{{ pod_name | default('') }}"
       # network: "{{ podman_network_name if pod_name | d('') is falsy else [] }}"
-      network: "slirp4netns:port_handler=slirp4netns"
+      # network: "slirp4netns:port_handler=slirp4netns"
       # security_opts: label:type:docker_t
-      publish: "{{ '636:636' if pod_name | d('') is falsy else [] }}"
+      publish: "{{ ['3636:3636', '3389:3389'] if pod_name | d('') is falsy else [] }}"
       volumes:
-        - {'host': '{{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}/certs', 'target': '/opt/bitnami/openldap/certs:Z', 'mode': '0700'}
-        - {'host': '{{ _container_storage_dir_base_local }}/{{ ldap389ds_container_name }}/data', 'target': '/bitnami/openldap:Z', 'mode': '0770'}
+        - {'host': '{{ _container_storage_dir_base_local }}/{{ ldap389ds_container_name }}/data', 'target': '/data:Z', 'mode': '0755'}
+        - {'host': '{{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}/tls', 'target': '/data/tls:Z', 'mode': '0700'}
       secrets:
         - {name: 'ldap_admin_password', data: '{{ ldap_auth_admin.bind_pw }}'}
         - {name: 'ldap_config_password', data: '{{ ldap_auth_config.bind_pw }}'}
+      healthcheck: 'dsctl slapd-localhost healthcheck'
       env:
-        # https://www.openldap.org/doc/admin24/runningslapd.html
-        # https://www.openldap.org/doc/admin24/slapdconf2.html
-        # consider olcLogLevel -1 setting in ldap/config/cn=config.ldif
-        BITNAMI_DEBUG: "no"
-        # LDAP_LOGLEVEL: "-1"
-        # CONTAINER_LOG_LEVEL: "1024"
-        LDAP_PORT_NUMBER: "389"
-        LDAP_LDAPS_PORT_NUMBER: "636"
-        LDAP_ROOT: "{{ ldap_base_dn }}"
-        LDAP_ADMIN_USER: "admin"
-        LDAP_ADMIN_PASSWORD_FILE: "/run/secrets/ldap_admin_password"
-        # LDAP_ADMIN_PASSWORD: "{{ ldap_admin_password }}"
-        LDAP_CONFIG_ADMIN_ENABLED: "yes"
-        LDAP_CONFIG_ADMIN_USER: "admin"
-        LDAP_CONFIG_ADMIN_PASSWORD_FILE: "/run/secrets/ldap_config_password"
-        # LDAP_CONFIG_ADMIN_PASSWORD: "{{ ldap_config_password }}"
-        LDAP_USER_DC: "{{ ldap_user_dc | d('users') }}"
-        # LDAP_USERS: "{{ ldap_readonly_user_username }}"
-        # LDAP_PASSWORDS: "{{ ldap_readonly_user_password }}"
-        LDAP_PASSWORDS: ""
-        LDAP_SKIP_DEFAULT_TREE: "yes"
-        LDAP_ENABLE_TLS: "yes"
-        # LDAP_REQUIRE_TLS: "yes"
-        LDAP_TLS_CERT_FILE: "/opt/bitnami/openldap/certs/{{ ldap_host }}.crt"
-        LDAP_TLS_KEY_FILE: "/opt/bitnami/openldap/certs/{{ ldap_host }}.key"
-        LDAP_TLS_CA_FILE: "/opt/bitnami/openldap/certs/{{ ldap_host }}.crt"
-        # LDAP_TLS_DH_PARAMS_FILE:
-        LDAP_TLS_VERIFY_CLIENTS: "never"
-        LDAP_ALLOW_ANON_BINDING: "no"
-        LDAP_CONFIGURE_PPOLICY: "yes"
-        LDAP_PPOLICY_HASH_CLEARTEXT: "yes"
+        # https://www.port389.org/docs/389ds/howto/howto-deploy-389ds-on-openshift.html
+        # DS_DM_PASSWORD: secretpassword
+        DS_SUFFIX_NAME: "{{ ldap_base_dn }}"
+        DS_DM_PASSWORD: "{{ ldap_admin_password }}"
+        # LDAP_ADMIN_PASSWORD_FILE: "/run/secrets/ldap_admin_password"
+        # # LDAP_ADMIN_PASSWORD: "{{ ldap_admin_password }}"
+        # LDAP_CONFIG_ADMIN_ENABLED: "yes"
+        # LDAP_CONFIG_ADMIN_USER: "admin"
+        # LDAP_CONFIG_ADMIN_PASSWORD_FILE: "/run/secrets/ldap_config_password"
+        # # LDAP_CONFIG_ADMIN_PASSWORD: "{{ ldap_config_password }}"
+        # LDAP_USER_DC: "{{ ldap_user_dc | d('users') }}"
+        # # LDAP_USERS: "{{ ldap_readonly_user_username }}"
+        # # LDAP_PASSWORDS: "{{ ldap_readonly_user_password }}"
+        # LDAP_PASSWORDS: ""
+        # LDAP_SKIP_DEFAULT_TREE: "yes"
+        # LDAP_ENABLE_TLS: "yes"
+        # # LDAP_REQUIRE_TLS: "yes"
+        # LDAP_TLS_CERT_FILE: "/opt/bitnami/openldap/certs/{{ ldap_host }}.crt"
+        # LDAP_TLS_KEY_FILE: "/opt/bitnami/openldap/certs/{{ ldap_host }}.key"
+        # LDAP_TLS_CA_FILE: "/opt/bitnami/openldap/certs/{{ ldap_host }}.crt"
+        # # LDAP_TLS_DH_PARAMS_FILE:
+        # LDAP_TLS_VERIFY_CLIENTS: "never"
+        # LDAP_ALLOW_ANON_BINDING: "no"
+        # LDAP_CONFIGURE_PPOLICY: "yes"
+        # LDAP_PPOLICY_HASH_CLEARTEXT: "yes"
         TZ: "Europe/Berlin"
       timezone: "Europe/Berlin"
   # no_log: true
@@ -140,12 +156,7 @@
     name: "provide ldap certs"
     cron_file: ldap389ds_certificate_update
     user: "{{ podman_user }}"
-    job: "podman unshare diff -q {{ certificate_src }}/{{
-          ldap_host }}/{{ ldap_host }}.crt {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}/certs/{{ ldap_host }}.crt || (
-          podman unshare cp -aTLv --remove-destination {{ certificate_src }}/{{ ldap_host }} {{ _container_storage_dir_base }}/{{
-          ldap389ds_container_name }}/certs;
-          podman unshare chown -Rh {{ podman_user }}:{{ podman_group }} {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}/certs;
-          podman restart {{ ldap389ds_container_name }} > /dev/null )"
+    job: /usr/local/bin/ldap389ds_certificate_update.sh
   tags: ldapcron
 
 - name: Ensure cron mail go to root
@@ -172,50 +183,131 @@
     name: python-ldap
   tags: skipttag
 
+# TODO: more time for first initialization
 - name: Wait for ldap service
   ansible.builtin.wait_for:
-    port: 636
+    port: 3636
     timeout: 60
+
+- name: Check for suffix existence.
+  become: "{{ podman_rootless | bool }}"
+  become_user: "{{ podman_user if podman_rootless | bool else omit }}"
+  ansible.builtin.command: >
+    podman exec {{ ldap389ds_container_name }} ldapsearch -x -H ldap://localhost:3389 -D "cn=Directory Manager" -y "/run/secrets/ldap_admin_password" -b "{{
+      ldap_base_dn }}" -s base
+  register: _ldapsearch_suffix
+  changed_when: false
+  failed_when:
+    - _ldapsearch_suffix.rc not in [0, 32]
+
+- name: Create the suffix
+  become: "{{ podman_rootless | bool }}"
+  become_user: "{{ podman_user if podman_rootless | bool else omit }}"
+  ansible.builtin.command: >
+    podman exec {{ ldap389ds_container_name }} dsconf -D "cn=Directory Manager" -y "/run/secrets/ldap_admin_password" ldap://localhost:3389
+    backend create --suffix "{{ ldap_base_dn }}"  --be-name "userRoot" --create-suffix
+  register: _create_suffix
+  when:
+    - _ldapsearch_suffix.rc == 32
+  changed_when: true
 
 # depending on using a backuo you have to adapt dn: module{0} vs. module{1}
 - name: Enable memberof module
   community.general.ldap_attrs:
-    dn: cn=module{1},cn=config
+    dn: cn=MemberOf Plugin,cn=plugins,cn=config
     attributes:
-      olcModuleLoad:
-        - "memberof.so"
-    server_uri: "{{ ldap_auth_config.server_uri }}"
-    bind_dn: "{{ ldap_auth_config.bind_dn }}"
-    bind_pw: "{{ ldap_auth_config.bind_pw }}"
-  register: result
-  until:
-    - not ( (result.failed | bool ) and ('Type or value exists' not in result.details) ) or not (result.failed | bool )
-  retries: 100
-  delay: 10
+      memberofgroupattr:
+        - "uniqueMember"
+      nsslapd-pluginEnabled:
+        - "on"
+    state: exact
+    server_uri: "ldaps://localhost:3636"
+    bind_dn: "cn=Directory Manager"
+    bind_pw: "{{ ldap_admin_password }}"
+    # server_uri: "{{ ldap_auth_config.server_uri }}"
+    # bind_dn: "{{ ldap_auth_config.bind_dn }}"
+    # bind_pw: "{{ ldap_auth_config.bind_pw }}"
+  register: _memberof_result
+  # until:
+  #   - not ( (_memberof_result.failed | bool ) and ('Type or value exists' not in _memberof_result.details) ) or not (_memberof_result.failed | bool )
+  # retries: 100
+  # delay: 10
   failed_when: >
-    (result.failed | bool ) and
-    ("'desc': 'Type or value exists'" not in result.details)
+    (_memberof_result.failed | bool ) and
+    ("'desc': 'Type or value exists'" not in _memberof_result.details)
   tags:
     - ldap_config_memberof
+  ignore_errors: true
 
-- name: Enable memberof olcOverlay
-  community.general.ldap_entry:
-    dn: olcOverlay=memberof,olcDatabase={2}mdb,cn=config
-    objectClass:
-      - olcOverlayConfig
-      - olcMemberOf
+# TODO fixup task required? dsconf -D "cn=Directory Manager" -y "/run/secrets/ldap_admin_password" ldap://localhost:3389 plugin memberof fixup-status
+
+- name: Create LDAP content
+  when: ldap_initial_local_data_file | d('') is falsy
+  block:
+    - name: Ldap create LDAP admin user
+      community.general.ldap_entry:
+        dn: "{{ ldap_auth_admin.bind_dn }}"
+        objectClass:
+          - simpleSecurityObject
+          - organizationalRole
+        attributes:
+          description: "LDAP read only user"
+          # cn: "{{ ldap_readonly_user_username }}"
+          userPassword: "{{ ldap_auth_admin.bind_pw }}"
+          # userPassword: "{{ '{SSHA}' + ldap_readonly_user_password }}"
+        server_uri: "ldaps://localhost:3636"
+        # server_uri: "{{ ldap_auth_admin.server_uri }}"
+        bind_dn: "cn=Directory Manager"
+        bind_pw: "{{ ldap_admin_password }}"
+        # bind_dn: "{{ ldap_auth_admin.bind_dn }}"
+        # bind_pw: "{{ ldap_auth_admin.bind_pw }}"
+      tags:
+        - ldap_ou
+
+    - name: Ldap create LDAP read only user
+      community.general.ldap_entry:
+        dn: "{{ 'cn=' + ldap_readonly_user_username + ',' + ldap_base_dn }}"
+        objectClass:
+          - simpleSecurityObject
+          - organizationalRole
+        attributes:
+          description: "LDAP read only user"
+          # cn: "{{ ldap_readonly_user_username }}"
+          userPassword: "{{ ldap_readonly_user_password }}"
+          # userPassword: "{{ '{SSHA}' + ldap_readonly_user_password }}"
+        server_uri: "ldaps://localhost:3636"
+        # server_uri: "{{ ldap_auth_admin.server_uri }}"
+        bind_dn: "cn=Directory Manager"
+        bind_pw: "{{ ldap_admin_password }}"
+        # bind_dn: "{{ ldap_auth_admin.bind_dn }}"
+        # bind_pw: "{{ ldap_auth_admin.bind_pw }}"
+      tags:
+        - ldap_ou
+
+- name: setup aci for admin and ldap_readonly
+  community.general.ldap_attrs:
+    dn: "{{ ldap_base_dn }}"
     attributes:
-      olcOverlay: "memberof"
-      olcMemberOfGroupOC: "groupOfUniqueNames"
-      olcMemberOfMemberAD: "uniqueMember"
-      olcMemberOfMemberOfAD: "memberOf"
-      olcMemberOfRefint: "TRUE"
-      olcMemberOfDangling: "ignore"
-    server_uri: "{{ ldap_auth_config.server_uri }}"
-    bind_dn: "{{ ldap_auth_config.bind_dn }}"
-    bind_pw: "{{ ldap_auth_config.bind_pw }}"
+      aci:
+        # default domain acl
+        # - (targetattr="dc || description || objectClass")(targetfilter="(objectClass=domain)")(version 3.0; acl "Enable anyone domain read";
+        #   allow (read, search, compare)(userdn="ldap:///anyone");)
+        - (targetattr="userPassword || shadowLastChange")(version 3.0; acl "Password policy"; allow (write) userdn="ldap:///{{
+          ldap_auth_admin.bind_dn }}"; allow (write) userdn="ldap:///self"; allow (compare,search,read) userdn="ldap:///anyone";)
+        - (targetattr="*")(version 3.0; acl "General access"; allow (read,search,compare) userdn="ldap:///self"; allow (all) userdn="ldap:///{{
+          ldap_auth_admin.bind_dn }}"; allow (read,search,compare) userdn="ldap:///{{ 'cn=' + ldap_readonly_user_username + ',' + ldap_base_dn }}";)
+    # state: exact
+    server_uri: "ldaps://localhost:3636"
+    # server_uri: "{{ ldap_auth_config.server_uri }}"
+    bind_dn: "cn=Directory Manager"
+    bind_pw: "{{ ldap_admin_password }}"
+  register: _aci_result
+  failed_when: >
+    (_aci_result.failed | bool ) and
+    ("'desc': 'Type or value exists'" not in _aci_result.details)
   tags:
     - ldap_config_memberof
+  ignore_errors: true
 
 # ldap389ds config restore: slapadd -c -F /etc/ldap/slapd.d -n 0 ldap389ds.config
 # ldap389ds data restore: slapadd -c -F /etc/ldap/slapd.d -n 2 ldap389ds.data
@@ -237,31 +329,47 @@
   tags:
     - ldap389ds_backup
 
-- name: Add cronjob for daily ldap389ds config backup
+- name: Add cronjob for daily ldap389ds db dumps
   become: "{{ podman_rootless | bool }}"
   become_user: "{{ podman_user if podman_rootless | bool else omit }}"
   ansible.builtin.cron:
-    name: "Daily ldap389ds config backup"
+    name: "Daily ldap389ds db dump"
     minute: "21"
     hour: "*/4"
-    job: "podman exec {{ ldap389ds_container_name }} sh -c '/opt/bitnami/openldap/sbin/slapcat -F /bitnami/openldap/slapd.d -n 0' >
-      {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}_backups/{{ ldap389ds_container_name }}.config;
-      gzip -f {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}_backups/{{ ldap389ds_container_name }}.config"
+    job: podman exec {{ ldap389ds_container_name }} sh -c 'dsctl slapd-localhost db2bak'
   tags:
     - ldap389ds_backup
+
+- name: Find old backups
+  ansible.builtin.find:
+    paths: "{{ _container_storage_dir_base_local }}/{{ ldap389ds_container_name }}/data/bak"
+    age: "14d"
+    recurse: true
+  register: _old_backups
+
+- name: Delete old backups
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ _old_backups.files }}"
+  when: _old_backups.matched > 0
 
 - name: Add cronjob for daily ldap389ds data backup
   become: "{{ podman_rootless | bool }}"
   become_user: "{{ podman_user if podman_rootless | bool else omit }}"
   ansible.builtin.cron:
     name: "Daily ldap389ds data backup"
-    minute: "22"
+    minute: "24"
     hour: "*/4"
-    job: "podman exec {{ ldap389ds_container_name }} sh -c '/opt/bitnami/openldap/sbin/slapcat -F /bitnami/openldap/slapd.d -n 2' >
-      {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}_backups/{{ ldap389ds_container_name }}.data;
-      gzip -f {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}_backups/{{ ldap389ds_container_name }}.data"
+    job: >
+      podman exec "{{ ldap389ds_container_name }}" sh -c 'ldapsearch -x -D "cn=Directory Manager" -y  "/run/secrets/ldap_admin_password"
+      -H ldap://localhost:3389 -b "{{ ldap_base_dn }}"
+      "(objectClass=*)" > "/data/bak/{{ ldap_base_dn | replace('=', '_') | replace(',', '_') }}_$(date +\%Y\%m\%d).ldif"'
   tags:
     - ldap389ds_backup
+
+- debug: var=_aci_result
+- pause:
 
 - name: Configure logrotate for the database dump
   ansible.builtin.template:
@@ -337,47 +445,6 @@
     #   tags:
     #     - ldap_ou
 
-    - name: Ldap create LDAP read only user
-      community.general.ldap_entry:
-        dn: "{{ 'cn=' + ldap_readonly_user_username + ',' + ldap_base_dn }}"
-        objectClass:
-          - simpleSecurityObject
-          - organizationalRole
-        attributes:
-          description: "LDAP read only user"
-          # cn: "{{ ldap_readonly_user_username }}"
-          userPassword: "{{ ldap_readonly_user_password }}"
-          # userPassword: "{{ '{SSHA}' + ldap_readonly_user_password }}"
-        server_uri: "{{ ldap_auth_admin.server_uri }}"
-        bind_dn: "{{ ldap_auth_admin.bind_dn }}"
-        bind_pw: "{{ ldap_auth_admin.bind_pw }}"
-      tags:
-        - ldap_ou
-
-    - name: Set up olcAccess rules
-      community.general.ldap_attrs:
-        dn: olcDatabase={2}mdb,cn=config
-        attributes:
-          olcAccess:
-            - >-
-              to attrs=userPassword,shadowLastChange
-              by self write
-              by dn="{{ ldap_auth_admin.bind_dn }}" write
-              by anonymous auth
-              by * none
-            - >-
-              to *
-              by self read
-              by dn="{{ ldap_auth_admin.bind_dn }}" write
-              by dn="{{ ldap_bind_dn }}" read
-              by * none
-        ordered: true
-        state: exact
-        server_uri: "{{ ldap_auth_config.server_uri }}"
-        bind_dn: "{{ ldap_auth_config.bind_dn }}"
-        bind_pw: "{{ ldap_auth_config.bind_pw }}"
-      tags:
-        - ldap_config_access
 
     - name: Ldap create domain ou ou={{ site_domain_ou }}
       community.general.ldap_entry:
