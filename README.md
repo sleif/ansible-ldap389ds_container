@@ -88,7 +88,7 @@ ansible-galaxy install sleif.caddy_container --force
        caddy_target_uri: ldap.example.com}
     - {role: sleif.ldap389ds_container, tags: "ldap389ds_container, ldap_example_de",
        container_name: ldap389ds,
-       site_domain_ou: "example_com",
+       site_domain_ou: "example_de",
        site_posix_users: "{{ site_posix_users_example_de }}",
        site_posix_groups: "{{ site_posix_groups_example_de }}",
        site_gouns: "{{ site_gouns_example_de }}"}
@@ -100,4 +100,4 @@ MIT
 
 ## Author Information
 
-Created in 2023 by Sebastian Berthold
+Created in 2025 by Sebastian Berthold
