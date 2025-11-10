@@ -72,6 +72,8 @@
           _container_storage_dir_base }}/{{ ldap389ds_container_name }}/tls/{{ ldap_host }}.crt '/-----BEGIN CERTIFICATE-----/' '{*}' -q;
           podman unshare mv {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}/tls/ca/ca00.crt {{ _container_storage_dir_base }}/{{
           ldap389ds_container_name }}/tls/server.crt;
+          podman unshare cp -a {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}/tls/{{ ldap_host }}.crt {{ _container_storage_dir_base }}/{{
+          ldap389ds_container_name }}/tls/server.crt;
           podman unshare mv {{ _container_storage_dir_base }}/{{ ldap389ds_container_name }}/tls/{{ ldap_host }}.key {{ _container_storage_dir_base }}/{{
           ldap389ds_container_name }}/tls/server.key;
           podman unshare chown -Rh {{ ldap389ds_container_root_uid }}:{{ ldap389ds_container_root_uid }}  {{ _container_storage_dir_base }}/{{
@@ -153,10 +155,10 @@
     name: openldap-clients
   tags: skipttag
 
-- name: Add variable to ignore certificate chain
-  ansible.builtin.lineinfile:
-    dest: /etc/openldap/ldap.conf
-    line: "TLS_REQCERT never"
+# - name: Add variable to ignore certificate chain
+#   ansible.builtin.lineinfile:
+#     dest: /etc/openldap/ldap.conf
+#     line: "TLS_REQCERT never"
 
 - name: Install python-ldap
   ansible.builtin.package:
@@ -368,6 +370,8 @@
 
 - name: Create LDAP content
   when: ldap_initial_local_data_file | d('') is falsy
+  tags:
+    - ldap_site_create
   block:
     - name: Ldap create dcObject
       community.general.ldap_entry:
